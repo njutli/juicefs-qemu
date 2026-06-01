@@ -9,12 +9,19 @@ set -euo pipefail
 
 # ── Configuration (from tikv-qemu + ceph-rgw-qemu) ──
 TIKV_PD="172.16.0.101:2379,172.16.0.102:2379,172.16.0.103:2379"
-RGW_ENDPOINT="http://172.16.1.101:80"
+
+# RGW HA: Linux resolver round-robins between two IPs for the same hostname.
+# If one RGW node is down, the AWS SDK retries to the other transparently.
+RGW_DOMAIN="rgw.ceph.local"
+RGW_PORT="80"
+RGW_NODES="172.16.1.101 172.16.1.102"
+
 # JuiceFS RGW user credentials (created by ceph-rgw-qemu/deploy-ceph.sh)
 ACCESS_KEY="412ISJADLIWIS6KS03D4"
 SECRET_KEY="ARhIrvjyKJpydnzm0eGlYhZSKByMwchB05YR6cMv"
 
 FS_NAME="juicefs-test"
+RGW_ENDPOINT="http://${RGW_DOMAIN}:${RGW_PORT}"
 BUCKET="${RGW_ENDPOINT}/${FS_NAME}"
 MOUNT_POINT="/tmp/juicefs-mnt"
 METADATA_URL="tikv://${TIKV_PD}/${FS_NAME}"
@@ -24,7 +31,18 @@ echo "JuiceFS Integration Test"
 echo "========================================"
 echo "Metadata: ${METADATA_URL}"
 echo "Data:     ${BUCKET} (Ceph RGW S3)"
+echo "RGW HA:   ${RGW_NODES} → ${RGW_DOMAIN}:${RGW_PORT} (resolver round-robin)"
 echo ""
+
+# ── Setup RGW HA via /etc/hosts ──
+# Linux resolver round-robins multiple IPs for the same hostname.
+# If node1 is down, AWS SDK falls back to the next IP automatically.
+for ip in ${RGW_NODES}; do
+    if ! grep -q "${RGW_DOMAIN}" /etc/hosts 2>/dev/null; then
+        echo "${ip} ${RGW_DOMAIN}" | sudo tee -a /etc/hosts > /dev/null
+        echo "  Added ${ip} → ${RGW_DOMAIN} to /etc/hosts"
+    fi
+done
 
 # ── Pre-flight checks ──
 
@@ -47,7 +65,7 @@ fi
 # Check RGW is accessible
 echo -n "Ceph RGW: "
 if curl -s --noproxy '*' --connect-timeout 3 "${RGW_ENDPOINT}" > /dev/null 2>&1; then
-    echo "OK"
+    echo "OK (via ${RGW_DOMAIN})"
 else
     echo "UNREACHABLE - ensure ceph-rgw-qemu VMs are running"
     exit 1
