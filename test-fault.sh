@@ -40,6 +40,19 @@ cleanup() {
 
 trap cleanup EXIT
 
+# ── Sync VM clocks (QEMU VMs lack NTP, drift after host sleep/resume) ──
+echo ">>> Syncing VM clocks with host..."
+HOST_TIME=$(date -u +"%Y-%m-%d %H:%M:%S")
+for ip in 172.16.1.101 172.16.1.102 172.16.1.103 172.16.0.101 172.16.0.102 172.16.0.103; do
+    ssh_vm "${ip}" "sudo date -s '${HOST_TIME}' 2>/dev/null; date -u" 2>/dev/null | tail -1
+done
+echo "  Clocks synced"
+
+# Restart RGW containers to clear clock-skew state
+ssh_vm "172.16.1.101" "sudo podman restart \$(sudo podman ps --filter name=rgw --format '{{.Names}}' | head -1) 2>/dev/null || true" 2>/dev/null
+ssh_vm "172.16.1.102" "sudo podman restart \$(sudo podman ps --filter name=rgw --format '{{.Names}}' | head -1) 2>/dev/null || true" 2>/dev/null
+sleep 10
+
 # ── Pre-flight ──
 
 echo "========================================"
@@ -74,7 +87,10 @@ if juicefs status "${METADATA_URL}" > /dev/null 2>&1; then
     UUID=$(juicefs status "${METADATA_URL}" 2>/dev/null | grep '"UUID"' | cut -d'"' -f4)
     yes | timeout 30 juicefs destroy --force "${METADATA_URL}" "${UUID}" 2>/dev/null || true
 fi
-aws --endpoint-url="http://${RGW_DOMAIN}:${RGW_PORT}" --no-verify-ssl s3 mb "s3://${FS_NAME}" 2>/dev/null || true
+# Pre-create bucket to avoid region constraint error on Ceph RGW
+export AWS_DEFAULT_REGION=""
+aws --endpoint-url="http://${RGW_DOMAIN}:${RGW_PORT}" --no-verify-ssl \
+    s3 mb "s3://${FS_NAME}" 2>/dev/null || true
 juicefs format --storage s3 --bucket "${BUCKET}" \
     --access-key "${ACCESS_KEY}" --secret-key "${SECRET_KEY}" \
     "${METADATA_URL}" "${FS_NAME}" 2>&1 | tail -3
