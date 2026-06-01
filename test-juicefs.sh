@@ -38,9 +38,11 @@ echo ""
 # Linux resolver round-robins multiple IPs for the same hostname.
 # If node1 is down, AWS SDK falls back to the next IP automatically.
 for ip in ${RGW_NODES}; do
-    if ! grep -q "${RGW_DOMAIN}" /etc/hosts 2>/dev/null; then
+    if ! grep -q "^${ip} ${RGW_DOMAIN}" /etc/hosts 2>/dev/null; then
         echo "${ip} ${RGW_DOMAIN}" | sudo tee -a /etc/hosts > /dev/null
         echo "  Added ${ip} → ${RGW_DOMAIN} to /etc/hosts"
+    else
+        echo "  ${ip} → ${RGW_DOMAIN} already in /etc/hosts"
     fi
 done
 
