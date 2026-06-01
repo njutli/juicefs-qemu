@@ -1,7 +1,77 @@
 #!/bin/bash
 set -euo pipefail
 
-# ============================================================
+# ==================================================================
+# JuiceFS Fault Injection Test
+# Verifies IO continuity during single-node failures:
+#   Test 1: RGW data node failure (1 of 2 RGW instances stopped)
+#   Test 2: TiKV metadata node failure (1 of 3 TiKV instances stopped)
+#
+# Test flow:
+#
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │ Pre-flight                                                  │
+#   │   ├─ Sync VM clocks (QEMU VMs drift after host sleep)       │
+#   │   ├─ Restart RGW containers (clear clock-skew state)        │
+#   │   ├─ Setup /etc/hosts (RGW HA round-robin)                  │
+#   │   └─ Clean stale mounts + unset proxy                       │
+#   │                                                             │
+#   │ Format + Mount                                              │
+#   │   ├─ Destroy old FS if exists                               │
+#   │   ├─ aws s3 mb pre-create bucket (avoid RGW region error)    │
+#   │   ├─ juicefs format (TiKV metadata + Ceph RGW data)          │
+#   │   └─ juicefs mount -d → /tmp/juicefs-fault-mnt              │
+#   │                                                             │
+#   ├─ Test 1: RGW Data Node Failure ───────────────────────────  │
+#   │   │                                                         │
+#   │   │   ┌────────────┐    RGW HA via /etc/hosts ──────────┐   │
+#   │   │   │ JuiceFS    │                                     │   │
+#   │   │   │ mount      │─── s3://rgw.ceph.local:80 ─────────┤   │
+#   │   │   └─────┬──────┘    │                                 │   │
+#   │   │         │           ├─── 172.16.1.101:80 (RGW 1) ──  │   │
+#   │   │    [background     │       ↑ podman stop              │   │
+#   │   │     writer]        │       │ FAULT INJECTED            │   │
+#   │   │         │           │       │                          │   │
+#   │   │    write ──────────────────→ RGW 2 (172.16.1.102:80)  │   │
+#   │   │         │           │       resolver falls back       │   │
+#   │   │    write ──────────────────→ RGW 2 (still writing)    │   │
+#   │   │         │           │                                 │   │
+#   │   │    [restore RGW 1] ─→ podman start                    │   │
+#   │   │         │           │                                 │   │
+#   │   │    write/read ──────→ verify OK after recovery        │   │
+#   │   │                                                       │   │
+#   │   │   Verify:                                              │   │
+#   │   │     - Writes continued during fault (count > 0)        │   │
+#   │   │     - Read/write works after RGW recovery              │   │
+#   │                                                             │
+#   ├─ Test 2: TiKV Metadata Node Failure ──────────────────────  │
+#   │   │                                                         │
+#   │   │   ┌────────────┐    TiKV 3-PD + 3-replica ─────────┐   │
+#   │   │   │ JuiceFS    │                                     │   │
+#   │   │   │ mount      │─── tikv://PD1,PD2,PD3:/jfs ────────┤   │
+#   │   │   └─────┬──────┘    │                                 │   │
+#   │   │         │           ├─── PD1 + TiKV1 (172.16.0.101)  │   │
+#   │   │    [background     ├─── PD2 + TiKV2 (172.16.0.102)  │   │
+#   │   │     writer]        ├─── PD3 + TiKV3 (172.16.0.103)  │   │
+#   │   │         │           │       ↑ systemctl stop tikv     │   │
+#   │   │    write ──────────────────→ PD Raft auto-failover   │   │
+#   │   │         │           │       TiKV Region leader迁移     │   │
+#   │   │    write ──────────────────→ other TiKV nodes         │   │
+#   │   │         │           │                                 │   │
+#   │   │    [restore TiKV] ──→ systemctl start tikv           │   │
+#   │   │         │           │                                 │   │
+#   │   │    write/read ──────→ verify OK after recovery        │   │
+#   │   │                                                       │   │
+#   │   │   Verify:                                              │   │
+#   │   │     - Writes succeeded during fault (count ≥ 8/10)     │   │
+#   │   │     - Read/write works after TiKV recovery             │   │
+#   │                                                             │
+#   │ Cleanup (trap EXIT)                                         │
+#   │   ├─ Restart TiKV on 172.16.0.103 (if still stopped)       │
+#   │   ├─ umount /tmp/juicefs-fault-mnt                         │
+#   │   └─ juicefs destroy + remove mount point                  │
+#   └─────────────────────────────────────────────────────────────┘
+# ==================================================================
 # JuiceFS Fault Injection Test
 # Verifies IO continuity during single-node failures:
 #   Test 1: RGW data node failure (1 of 2 RGW instances stopped)
@@ -229,6 +299,9 @@ echo ">>> Unmounting..."
 sudo umount "${MOUNT_POINT}" 2>/dev/null || true
 
 echo ">>> Destroying test filesystem..."
-yes | timeout 30 juicefs destroy --force "${METADATA_URL}" 2>/dev/null || true
+FS_UUID=$(juicefs status "${METADATA_URL}" 2>/dev/null | grep '"UUID"' | cut -d'"' -f4)
+if [ -n "${FS_UUID:-}" ]; then
+    yes | timeout 30 juicefs destroy --force "${METADATA_URL}" "${FS_UUID}" 2>/dev/null || true
+fi
 
 echo ">>> Cleanup done."
