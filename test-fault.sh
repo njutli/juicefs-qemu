@@ -78,8 +78,11 @@ mkdir -p "${MOUNT_POINT}"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 export AWS_ACCESS_KEY_ID="${ACCESS_KEY}"
 export AWS_SECRET_ACCESS_KEY="${SECRET_KEY}"
+export AWS_DEFAULT_REGION=default
 
-# ── Format + Mount ──
+# Pre-create bucket needed by JuiceFS format (avoid RGW region constraint error)
+aws --endpoint-url="http://${RGW_DOMAIN}:${RGW_PORT}" --no-verify-ssl \
+    s3 mb "s3://${FS_NAME}" 2>/dev/null || true
 
 echo ">>> Formatting JuiceFS..."
 if juicefs status "${METADATA_URL}" > /dev/null 2>&1; then
@@ -87,10 +90,6 @@ if juicefs status "${METADATA_URL}" > /dev/null 2>&1; then
     UUID=$(juicefs status "${METADATA_URL}" 2>/dev/null | grep '"UUID"' | cut -d'"' -f4)
     yes | timeout 30 juicefs destroy --force "${METADATA_URL}" "${UUID}" 2>/dev/null || true
 fi
-# Pre-create bucket to avoid region constraint error on Ceph RGW
-export AWS_DEFAULT_REGION=""
-aws --endpoint-url="http://${RGW_DOMAIN}:${RGW_PORT}" --no-verify-ssl \
-    s3 mb "s3://${FS_NAME}" 2>/dev/null || true
 juicefs format --storage s3 --bucket "${BUCKET}" \
     --access-key "${ACCESS_KEY}" --secret-key "${SECRET_KEY}" \
     "${METADATA_URL}" "${FS_NAME}" 2>&1 | tail -3
