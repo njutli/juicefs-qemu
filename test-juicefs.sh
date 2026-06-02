@@ -115,6 +115,22 @@ sudo umount "${MOUNT_POINT}" 2>/dev/null || true
 rm -rf "${MOUNT_POINT}"
 mkdir -p "${MOUNT_POINT}"
 
+# ── Sync VM clocks ──
+# QEMU VMs lack NTP and drift after host sleep/resume.
+# Clock skew causes Ceph RGW to reject S3 requests (RequestTimeTooSkewed).
+HOST_TIME=$(date -u +"%Y-%m-%d %H:%M:%S")
+for ip in 172.16.1.101 172.16.1.102 172.16.1.103 172.16.0.101 172.16.0.102 172.16.0.103; do
+    sshpass -p "ubuntu" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+        "ubuntu@${ip}" "sudo date -s '${HOST_TIME}' 2>/dev/null" 2>/dev/null &
+done
+wait
+# Restart RGW containers to clear clock-skew state
+for ip in 172.16.1.101 172.16.1.102; do
+    sshpass -p "ubuntu" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+        "ubuntu@${ip}" "sudo podman restart \$(sudo podman ps --filter name=rgw --format '{{.Names}}' | head -1) 2>/dev/null || true" 2>/dev/null &
+done
+wait; sleep 10
+
 # Unset proxy — JuiceFS Go client must connect directly to TiKV PD over bridge
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 
