@@ -158,7 +158,6 @@ echo ""
 echo ">>> Step 2: Mounting filesystem..."
 
 juicefs mount -d "${METADATA_URL}" "${MOUNT_POINT}" &
-MOUNT_PID=$!
 sleep 3
 
 if mountpoint -q "${MOUNT_POINT}"; then
