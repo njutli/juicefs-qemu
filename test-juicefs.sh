@@ -232,7 +232,7 @@ echo "    5 nested files created"
 
 echo ""
 echo ">>> Step 7: Filesystem statistics..."
-juicefs info "${METADATA_URL}" 2>&1 | head -10
+juicefs status "${METADATA_URL}" 2>&1 | head -10 || true
 
 # ── Step 8: Unmount and cleanup ──
 
