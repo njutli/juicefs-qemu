@@ -1,11 +1,47 @@
 #!/bin/bash
 set -euo pipefail
 
-# ============================================================
-# JuiceFS Test Script
+# ==================================================================
+# JuiceFS Integration Test
 # Metadata: TiKV (3 nodes, via tikv-qemu)
 # Data:     Ceph RGW S3 (via ceph-rgw-qemu)
-# ============================================================
+#
+# Test flow:
+#
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │ Pre-flight                                                  │
+#   │   ├─ Kill stale juicefs processes + unmount                 │
+#   │   ├─ Unset proxy (JuiceFS Go client → TiKV PD over bridge)  │
+#   │   ├─ Check TiKV PD accessible (curl health API)              │
+#   │   └─ Check Ceph RGW accessible (curl → rgw.ceph.local:80)   │
+#   │                                                             │
+#   │ Step 1 — Format                                              │
+#   │   ├─ Setup RGW HA (/etc/hosts: 2 IPs → rgw.ceph.local)     │
+#   │   ├─ Skip if FS already exists (juicefs status check)       │
+#   │   ├─ Pre-create S3 bucket (aws s3 mb, avoid RGW region err) │
+#   │   └─ juicefs format --storage s3 --bucket ...               │
+#   │       ├─ Metadata → TiKV (tikv://PD1,PD2,PD3:/jfs)          │
+#   │       └─ Data → Ceph RGW (s3://rgw.ceph.local:80/jfs)      │
+#   │                                                             │
+#   │ Step 2 — Mount                                               │
+#   │   └─ juicefs mount -d → /tmp/juicefs-mnt                    │
+#   │       ├─ gRPC → TiKV PD (read metadata)                     │
+#   │       └─ S3 API → Ceph RGW (read/write data)                │
+#   │                                                             │
+#   │ Step 3-6 — Read/Write Operations                             │
+#   │   ├─ Write text file (echo > hello.txt)                     │
+#   │   ├─ Write 10MB binary (dd random > random.bin)             │
+#   │   ├─ Read back and verify content matches                   │
+#   │   ├─ Verify binary file size (10MB)                         │
+#   │   ├─ List directory (ls -lh)                                │
+#   │   ├─ Create subdirectory + 5 nested files                   │
+#   │   └─ juicefs info (filesystem statistics)                    │
+#   │                                                             │
+#   │ Step 7 — Cleanup                                             │
+#   │   ├─ umount /tmp/juicefs-mnt                                │
+#   │   └─ Show remount / destroy instructions                     │
+#   └─────────────────────────────────────────────────────────────┘
+# ==================================================================
 
 # ── Configuration (from tikv-qemu + ceph-rgw-qemu) ──
 TIKV_PD="172.16.0.101:2379,172.16.0.102:2379,172.16.0.103:2379"
